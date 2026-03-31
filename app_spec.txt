@@ -1,0 +1,627 @@
+# app_spec.txt -- Godot 4.6.2-rc2 Fork Build Specification
+# Target: Claude Code autonomous execution
+# Deliverable: godot-lib.aar + .so files with AccessKit Android TalkBack + ThorVG Lottie
+
+================================================================================
+PROJECT OVERVIEW
+================================================================================
+
+Fork Godot Engine 4.6.2-rc2 to add:
+  A) Native Lottie animation playback via ThorVG (already bundled, Lottie loader disabled)
+  B) AccessKit Android adapter for TalkBack screen reader (full: nav order, live regions, custom actions, focus)
+
+Final output: Android .aar and .so files for arm64-v8a, armeabi-v7a, x86_64.
+Must work in BOTH standalone Godot Android apps AND embedded GodotFragment mode.
+
+================================================================================
+EXECUTION ORDER -- CRITICAL
+================================================================================
+
+Phase 0 → Phase 1 → Phase 2 → Phase 3 → Phase 4
+
+Do NOT start Phase 2 until Phase 1 compiles and runs on Android.
+Phase 1 (Lottie) validates the cross-compilation pipeline.
+Phase 2 (AccessKit) is the high-risk work.
+
+================================================================================
+PHASE 0: ENVIRONMENT SETUP
+================================================================================
+
+0.1 Clone and tag:
+    git clone https://github.com/godotengine/godot.git godot-fork
+    cd godot-fork
+    git checkout 4.6.2-rc2
+    git checkout -b feature/accesskit-android-lottie
+
+0.2 Install build dependencies (Ubuntu 22.04):
+    sudo apt-get install -y build-essential scons pkg-config libx11-dev \
+      libxcursor-dev libxinerama-dev libxi-dev libxrandr-dev libgl-dev \
+      libasound2-dev libpulse-dev libdbus-1-dev libudev-dev \
+      openjdk-17-jdk python3 python3-pip
+    pip3 install scons
+
+0.3 Android SDK/NDK:
+    - Download commandlinetools-linux
+    - sdkmanager "platforms;android-34" "build-tools;34.0.0" "ndk;26.3.11579264"
+    - Set ANDROID_HOME, ANDROID_NDK_HOME
+    - Create debug keystore if not exists
+
+0.4 Rust toolchain (for accesskit-c Android build):
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+    rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+    cargo install cargo-ndk
+
+0.5 Verify baseline build:
+    # Desktop editor (sanity check)
+    scons platform=linuxbsd target=editor -j$(nproc)
+
+    # Vanilla Android build (proves toolchain works)
+    scons platform=android target=template_release arch=arm64 -j$(nproc)
+    cd platform/android/java && ./gradlew generateGodotTemplates
+    # Verify godot-lib-release.aar exists in lib/build/outputs/aar/
+
+================================================================================
+PHASE 1: THORVG LOTTIE NATIVE SUPPORT
+================================================================================
+
+GOAL: A new LottieAnimation Node2D that plays .json/.lottie files natively.
+
+--- Step 1.1: Assess bundled ThorVG version ---
+
+    cat thirdparty/thorvg/VERSION  # or check SCsub for version info
+    # Compare with https://github.com/thorvg/thorvg/releases
+    # If bundled version lacks src/loaders/lottie/ directory, update ThorVG:
+    #   Download latest ThorVG release
+    #   Replace thirdparty/thorvg/src/ contents
+    #   Update thirdparty/thorvg/SCsub file list
+
+--- Step 1.2: Enable Lottie loader in ThorVG SCsub ---
+
+    File: thirdparty/thorvg/SCsub
+
+    Find the source file list. It currently includes SVG loader files like:
+      "src/loaders/svg/tvgSvgLoader.cpp"
+      "src/loaders/svg/tvgSvgParser.cpp"
+      etc.
+
+    Add Lottie loader files. The exact filenames depend on ThorVG version.
+    Typical Lottie loader files:
+      "src/loaders/lottie/tvgLottieLoader.cpp"
+      "src/loaders/lottie/tvgLottieParser.cpp"
+      "src/loaders/lottie/tvgLottieModel.cpp"
+      "src/loaders/lottie/tvgLottieBuilder.cpp"
+      "src/loaders/lottie/tvgLottieExpressions.cpp"  # OPTIONAL -- skip if JS dependency
+      "src/loaders/lottie/tvgLottieInterpolator.cpp"
+
+    IMPORTANT: Do NOT include expression evaluation files if they pull in a JS engine.
+    Check if ThorVG has a build flag to disable expressions.
+
+    Also ensure the Lottie loader's headers are in the include path.
+
+--- Step 1.3: Create Lottie module ---
+
+    mkdir -p modules/lottie
+
+    Create modules/lottie/config.py:
+    ```python
+    def can_build(env, platform):
+        return True
+
+    def configure(env):
+        pass
+
+    def get_doc_classes():
+        return ["LottieAnimation"]
+
+    def get_doc_path():
+        return "doc_classes"
+    ```
+
+    Create modules/lottie/SCsub:
+    ```python
+    Import("env")
+    module_env = env.Clone()
+    module_env.add_source_files(env.modules_sources, "*.cpp")
+    ```
+
+    Create modules/lottie/register_types.h:
+    ```cpp
+    #ifndef LOTTIE_REGISTER_TYPES_H
+    #define LOTTIE_REGISTER_TYPES_H
+
+    #include "modules/register_module_types.h"
+
+    void initialize_lottie_module(ModuleInitializationLevel p_level);
+    void uninitialize_lottie_module(ModuleInitializationLevel p_level);
+
+    #endif
+    ```
+
+    Create modules/lottie/register_types.cpp:
+    ```cpp
+    #include "register_types.h"
+    #include "lottie_animation.h"
+    #include "core/object/class_db.h"
+
+    void initialize_lottie_module(ModuleInitializationLevel p_level) {
+        if (p_level != MODULE_INITIALIZATION_LEVEL_SCENE) {
+            return;
+        }
+        GDREGISTER_CLASS(LottieAnimation);
+    }
+
+    void uninitialize_lottie_module(ModuleInitializationLevel p_level) {
+        if (p_level != MODULE_INITIALIZATION_LEVEL_SCENE) {
+            return;
+        }
+    }
+    ```
+
+--- Step 1.4: Implement LottieAnimation node ---
+
+    Create modules/lottie/lottie_animation.h:
+
+    Class LottieAnimation : public Node2D
+    Properties:
+      - String lottie_file_path      // path to .json or .lottie file
+      - float speed = 1.0
+      - bool loop = true
+      - bool autoplay = true
+      - int current_frame             // read/write
+      - int total_frames              // read-only
+      - float duration                // read-only, seconds
+      - Vector2 animation_size        // read-only, native Lottie canvas size
+
+    Methods:
+      - void play()
+      - void pause()
+      - void stop()
+      - void seek(int frame)
+      - bool is_playing() const
+
+    Signals:
+      - animation_finished()
+      - animation_looped()
+
+    Internal members:
+      - tvg::SwCanvas* canvas = nullptr
+      - tvg::Animation* animation = nullptr
+      - Ref<ImageTexture> texture
+      - PackedByteArray pixel_buffer
+      - bool playing = false
+      - float elapsed_time = 0.0
+
+    Key implementation details:
+
+    _ready():
+      - Initialize tvg::Initializer::init(0)  // 0 = auto thread count
+      - Create tvg::SwCanvas
+      - Load lottie file via tvg::Animation
+      - Get total_frames and duration from animation
+      - Allocate pixel_buffer (width * height * 4 bytes, ARGB32)
+      - Set canvas target to pixel_buffer
+      - If autoplay, call play()
+
+    _process(delta):
+      - If not playing, return
+      - elapsed_time += delta * speed
+      - Calculate target_frame from elapsed_time and duration
+      - Handle looping / finished
+      - If frame changed:
+        - animation->frame(target_frame)
+        - canvas->clear()
+        - canvas->update()
+        - canvas->draw()
+        - Convert ARGB32 → RGBA8 in pixel_buffer (swap channels)
+        - Create Image from pixel_buffer
+        - Update ImageTexture
+        - queue_redraw()
+
+    _draw():
+      - If texture is valid:
+        - draw_texture(texture, Point2())
+
+    set_lottie_file_path(path):
+      - Load the file
+      - Reinitialize animation
+      - Reset elapsed_time
+      - queue_redraw()
+
+--- Step 1.5: Build and test desktop ---
+
+    scons platform=linuxbsd target=editor modules_enabled_by_default=yes -j$(nproc)
+    # Run editor, create scene with LottieAnimation node
+    # Set lottie_file_path to a .json Lottie file
+    # Verify animation plays in editor viewport
+
+--- Step 1.6: Build and test Android ---
+
+    scons platform=android target=template_release arch=arm64 lottie=yes -j$(nproc)
+    cd platform/android/java && ./gradlew generateGodotTemplates
+    # Export a test project with LottieAnimation to Android
+    # Install on device, verify animation plays
+
+--- Step 1.7: Test in embedded GodotFragment ---
+
+    Create a minimal Android Studio project:
+    - Add godot-lib.aar as dependency
+    - Create Activity with FrameLayout
+    - Add GodotFragment programmatically
+    - Load a Godot project that uses LottieAnimation
+    - Verify animation renders correctly inside the fragment
+
+================================================================================
+PHASE 2: ACCESSKIT ANDROID ADAPTER
+================================================================================
+
+GOAL: TalkBack reads Godot Control nodes. Full feature set: navigation, live regions,
+custom actions, focus management. Works in standalone and embedded modes.
+
+--- Step 2.1: Build accesskit-c for Android ---
+
+    git clone https://github.com/AccessKit/accesskit-c.git
+    cd accesskit-c
+
+    # The Cargo.toml should already reference accesskit_android if version is recent enough.
+    # If not, add it:
+    #   [dependencies]
+    #   accesskit_android = "0.4"
+
+    # Check if the C header (accesskit.h) already declares android adapter functions.
+    # If not, we need to add them following the pattern of windows/macos/unix functions.
+
+    # Cross-compile for each Android ABI:
+    export ANDROID_NDK_HOME=/path/to/ndk
+
+    # For arm64:
+    cargo ndk -t arm64-v8a build --release
+    # Output: target/aarch64-linux-android/release/libaccesskit.a
+
+    # For arm32:
+    cargo ndk -t armeabi-v7a build --release
+
+    # For x86_64:
+    cargo ndk -t x86_64 build --release
+
+    # If cargo-ndk doesn't work with the static lib setup, use manual cross-compilation:
+    # Create .cargo/config.toml with:
+    #   [target.aarch64-linux-android]
+    #   ar = "/path/to/ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+    #   linker = "/path/to/ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android34-clang"
+
+    # Place output static libraries:
+    mkdir -p ../godot-fork/thirdparty/accesskit/android/arm64-v8a
+    mkdir -p ../godot-fork/thirdparty/accesskit/android/armeabi-v7a
+    mkdir -p ../godot-fork/thirdparty/accesskit/android/x86_64
+    cp target/aarch64-linux-android/release/libaccesskit.a \
+       ../godot-fork/thirdparty/accesskit/android/arm64-v8a/
+    # ... repeat for other ABIs
+
+    # Also copy the accesskit.h header (with Android functions) to:
+    #   ../godot-fork/thirdparty/accesskit/include/accesskit.h
+
+--- Step 2.2: Modify Godot build system for Android AccessKit ---
+
+    File: platform/android/detect.py
+
+    Find where env["accesskit"] is set. On desktop platforms it defaults to "yes".
+    For Android it's probably missing or set to "no". Change to:
+      env["accesskit"] = "yes"
+
+    Or add a new SCons option:
+      opts.Add(BoolVariable("accesskit", "Enable AccessKit accessibility", True))
+
+    File: platform/android/SCsub
+
+    Add linking for AccessKit static lib:
+    ```python
+    if env["accesskit"]:
+        env.Prepend(CPPDEFINES=["ACCESSKIT_ENABLED"])
+        abi = env["android_arch"]  # arm64, arm32, x86_64
+        abi_dir = {"arm64": "arm64-v8a", "arm32": "armeabi-v7a", "x86_64": "x86_64"}[abi]
+        env.Prepend(LIBS=["accesskit"])
+        env.Prepend(LIBPATH=["#thirdparty/accesskit/android/" + abi_dir])
+        env.Prepend(CPPPATH=["#thirdparty/accesskit/include"])
+    ```
+
+--- Step 2.3: Wire AccessKit into DisplayServerAndroid ---
+
+    Study the existing desktop implementations first:
+    - platform/windows/display_server_windows.cpp → search for ACCESSKIT_ENABLED
+    - drivers/accesskit/accessibility_driver_accesskit.cpp → understand the driver API
+
+    File: platform/android/display_server_android.h
+
+    Add (inside #ifdef ACCESSKIT_ENABLED):
+    - #include "drivers/accesskit/accessibility_driver_accesskit.h"
+    - AccessibilityDriverAccessKit *accessibility_driver = nullptr;
+    - Methods that mirror what Windows/Linux do
+
+    File: platform/android/display_server_android.cpp
+
+    In DisplayServerAndroid constructor or create():
+    - Initialize the AccessKit Android adapter
+    - The accesskit-c Android adapter needs:
+      a) A JNI env pointer (available via JNI_OnLoad or ThreadAndroid::get_env())
+      b) A reference to the Activity or View that hosts the Godot surface
+      c) A callback for when the adapter needs a tree update
+    - Call accessibility_driver = memnew(AccessibilityDriverAccessKit)
+    - Call accessibility_driver->window_create(MAIN_WINDOW_ID, android_native_handle)
+
+    In has_feature():
+    - case FEATURE_ACCESSIBILITY_SCREEN_READER:
+        return (accessibility_driver != nullptr);
+
+    The exact accesskit-c Android API functions will be visible in the accesskit.h header
+    after building. They likely follow the pattern:
+      accesskit_android_adapter_new(...)
+      accesskit_android_adapter_update(...)
+      accesskit_android_adapter_free(...)
+
+--- Step 2.4: Create Java-side accessibility bridge ---
+
+    New file: platform/android/java/lib/src/org/godotengine/godot/accessibility/GodotAccessibilityDelegate.java
+
+    ```java
+    package org.godotengine.godot.accessibility;
+
+    import android.view.View;
+    import android.view.accessibility.AccessibilityEvent;
+    import android.view.accessibility.AccessibilityNodeInfo;
+    import android.view.accessibility.AccessibilityNodeProvider;
+
+    /**
+     * Bridges AccessKit's JNI-exposed accessibility tree to Android's
+     * AccessibilityNodeProvider framework.
+     *
+     * AccessKit (Rust) → accesskit-c (C) → JNI → this class → Android TalkBack
+     */
+    public class GodotAccessibilityDelegate extends View.AccessibilityDelegate {
+        // Native methods -- implemented in accesskit-c's JNI layer
+        // These are called BY AccessKit when it needs to provide info to Android
+        // and called FROM Android when TalkBack requests info
+
+        // The exact JNI method signatures depend on accesskit_android's Java API.
+        // Check the accesskit_android crate's Java companion class.
+        // It likely provides a class like AccessKitNodeProvider that we delegate to.
+    }
+    ```
+
+    IMPORTANT: The accesskit_android Rust crate already contains Java-side code
+    (it uses the jni crate). We need to understand exactly what Java classes it
+    expects to exist and wire them into Godot's Java layer.
+
+    Check the accesskit_android crate source:
+      https://github.com/AccessKit/accesskit/tree/main/platforms/android
+
+    It likely provides:
+    - A native method that creates the adapter
+    - A Java class that implements AccessibilityNodeProvider
+    - JNI callbacks for when TalkBack queries for node info
+
+    Our job is to:
+    1. Load the native library (libaccesskit.so or linked into libgodot_android.so)
+    2. Create the adapter when GodotView is created
+    3. Set GodotView's AccessibilityDelegate to use the AccessKit provider
+    4. Ensure tree updates from DisplayServerAndroid reach the adapter
+
+    File: platform/android/java/lib/src/org/godotengine/godot/GodotView.kt
+
+    In init or constructor:
+    ```kotlin
+    // Wire accessibility
+    if (accessibilityEnabled) {
+        setAccessibilityDelegate(GodotAccessibilityDelegate(this))
+    }
+    ```
+
+--- Step 2.5: Handle embedded mode ---
+
+    In embedded mode, GodotFragment hosts GodotView inside the host app's view hierarchy.
+
+    Key requirements:
+    - GodotView.getAccessibilityNodeProvider() must return our AccessKit-backed provider
+    - The provider must scope its virtual node IDs to not conflict with the host app
+    - When TalkBack focus moves from host app views to GodotView, the transition must be smooth
+    - When TalkBack focus is inside GodotView, navigation should follow AccessKit's tree order
+    - AccessibilityEvents from Godot must be dispatched through GodotView, not the Activity
+
+    Test specifically:
+    - Host app has its own focusable views above/below GodotFragment
+    - Swiping through TalkBack should enter and exit the Godot view cleanly
+    - Live region announcements from Godot should not disrupt host app announcements
+
+--- Step 2.6: Implement full TalkBack features ---
+
+    For each feature, trace how it works on desktop and replicate for Android:
+
+    NAVIGATION ORDER:
+    - AccessKit tree children are ordered. This order becomes TalkBack swipe order.
+    - Godot's Control.set_focus_next() and focus_neighbor properties should map to tree order.
+    - Verify by creating a scene with multiple buttons and checking swipe order.
+
+    LIVE REGIONS:
+    - When a Control's text changes and it has accessibility_live = "polite" or "assertive":
+      AccessKit sets LiveSetting on the node, the adapter sends TYPE_WINDOW_CONTENT_CHANGED.
+    - TalkBack will announce the new text without moving focus.
+    - Test with a Label that updates its text dynamically.
+
+    CUSTOM ACTIONS:
+    - Godot's accessibility_add_custom_action() adds a CustomAction to the AccessKit node.
+    - On Android, this becomes an additional action in TalkBack's actions menu.
+    - Test by adding a custom action to a Button and activating it via TalkBack.
+
+    FOCUS MANAGEMENT:
+    - When a Control grabs focus, AccessKit sets IsFocused.
+    - The adapter sends ACTION_ACCESSIBILITY_FOCUS to TalkBack.
+    - When TalkBack user explicitly focuses a node, the adapter sends Focus action back to Godot.
+    - Test by programmatically grabbing focus and verifying TalkBack follows.
+
+    TEXT INPUT:
+    - LineEdit and TextEdit expose TextValue and TextSelection via AccessKit.
+    - On Android, this maps to editable text AccessibilityNodeInfo.
+    - TalkBack should announce characters as typed.
+    - IME (software keyboard) should work with AccessKit's text input handling.
+    - Test with a LineEdit: type text with TalkBack active, verify character echo.
+
+    SCROLL:
+    - ScrollContainer exposes ScrollPosition and handles ScrollTo action.
+    - On Android, AccessibilityNodeInfo.setScrollable(true).
+    - TalkBack can send scroll forward/backward actions.
+    - Test with a VBoxContainer in a ScrollContainer with many buttons.
+
+================================================================================
+PHASE 3: PACKAGING
+================================================================================
+
+3.1 Build all ABIs with both features:
+
+    for arch in arm64 arm32 x86_64; do
+        scons platform=android target=template_debug arch=$arch \
+            accesskit=yes lottie=yes -j$(nproc)
+        scons platform=android target=template_release arch=$arch \
+            accesskit=yes lottie=yes -j$(nproc)
+    done
+
+3.2 Generate AAR:
+
+    cd platform/android/java
+    ./gradlew generateGodotTemplates
+
+3.3 Extract artifacts:
+
+    mkdir -p output/
+    cp lib/build/outputs/aar/godot-lib-release.aar output/godot-lib-4.6.2-custom.aar
+
+    # Extract .so files for engineers who need them standalone:
+    cd output
+    unzip godot-lib-4.6.2-custom.aar -d aar-contents
+    cp -r aar-contents/jni/ output/native-libs/
+    # Result:
+    #   output/native-libs/arm64-v8a/libgodot_android.so
+    #   output/native-libs/armeabi-v7a/libgodot_android.so
+    #   output/native-libs/x86_64/libgodot_android.so
+
+3.4 Create sample projects:
+
+    a) standalone-sample/
+       - Godot project with:
+         - LottieAnimation node playing a UI animation
+         - Several Button/Label controls with accessibility names
+         - A LineEdit for text input testing
+         - Export preset for Android
+
+    b) embedded-sample/
+       - Android Studio project with:
+         - MainActivity with LinearLayout
+         - Native Android Button above GodotFragment
+         - GodotFragment loading the sample Godot project
+         - Native Android Button below GodotFragment
+         - build.gradle referencing the custom godot-lib.aar
+
+================================================================================
+PHASE 4: VALIDATION
+================================================================================
+
+4.1 TalkBack testing checklist (physical device required):
+
+    [ ] App launches with TalkBack active -- no crash
+    [ ] Button labels read correctly
+    [ ] Swipe navigation visits all controls in correct order
+    [ ] Double-tap activates buttons
+    [ ] LineEdit: can type with TalkBack, characters echoed
+    [ ] ScrollContainer: TalkBack scroll gestures work
+    [ ] Live region: Label text update announced without focus change
+    [ ] Custom action: accessible from TalkBack actions menu
+    [ ] Focus: programmatic focus change tracked by TalkBack
+
+4.2 Embedded mode testing (physical device):
+
+    [ ] Host app views accessible before GodotFragment
+    [ ] Swiping into GodotFragment transitions smoothly
+    [ ] Godot controls accessible within fragment
+    [ ] Swiping past last Godot control exits to host app views
+    [ ] Host app a11y tree not corrupted
+
+4.3 Lottie testing:
+
+    [ ] Simple UI animation plays at 60fps on mid-range device
+    [ ] Complex animation (500+ layers) plays at 30fps minimum
+    [ ] .lottie (ZIP) format loads correctly
+    [ ] .json format loads correctly
+    [ ] play/pause/stop/seek work correctly
+    [ ] Loop mode works
+    [ ] animation_finished signal fires
+    [ ] Animation renders correctly in embedded fragment
+
+4.4 Desktop regression:
+
+    [ ] Windows: AccessKit still works (NVDA/Narrator)
+    [ ] Linux: AccessKit still works (Orca)
+    [ ] LottieAnimation works in desktop editor
+    [ ] No build warnings introduced
+
+4.5 Binary size check:
+
+    ls -la output/native-libs/arm64-v8a/libgodot_android.so
+    # Compare with vanilla Godot build
+    # Expected overhead: ~200-400KB (AccessKit ~150KB + Lottie loader ~100KB)
+    # If significantly larger, investigate
+
+================================================================================
+KNOWN GOTCHAS
+================================================================================
+
+1. accesskit-c's C header may not yet declare Android functions.
+   You may need to add them to the header manually and regenerate:
+     accesskit_android_adapter_new()
+     accesskit_android_adapter_update_if_active()
+     accesskit_android_adapter_free()
+   Look at how windows/macos/unix adapter functions are declared in accesskit.h.
+
+2. The accesskit_android Rust crate depends on the `jni` crate which needs
+   $JAVA_HOME and Android JNI headers during compilation. If cargo-ndk fails,
+   set these environment variables explicitly.
+
+3. Godot's Android build uses both ndk-build style (for .so) and Gradle (for .aar).
+   The .so is compiled by SCons directly using the NDK's Clang. Make sure the
+   libaccesskit.a static lib was compiled with the SAME NDK version.
+
+4. ThorVG's Lottie expressions feature uses a built-in JavaScript interpreter.
+   This adds ~200KB+ and is a security concern. Disable it unless explicitly needed.
+   Check ThorVG's build options for something like:
+     -Dexpressions=false  (Meson) or a preprocessor define
+
+5. In embedded mode, GodotView is a GLSurfaceView subclass. Android's accessibility
+   framework treats SurfaceView/GLSurfaceView as opaque by default -- TalkBack will
+   announce "Godot view" or similar. The AccessibilityNodeProvider override is what
+   makes TalkBack see the individual nodes INSIDE the GL surface.
+
+6. Godot's control focus system and AccessKit's focus concept are slightly different.
+   Godot has keyboard focus (which Control processes input). AccessKit has accessibility
+   focus (which screen reader highlights). Map Godot keyboard focus to AccessKit focus,
+   but also handle the case where TalkBack moves a11y focus independently.
+
+7. When building for arm32 (armeabi-v7a), ThorVG's NEON SIMD optimizations may not
+   be available on all devices. ThorVG should gracefully fall back to scalar code.
+   Verify this doesn't crash on older 32-bit devices.
+
+================================================================================
+SUCCESS CRITERIA
+================================================================================
+
+The build is DONE when:
+
+1. `godot-lib-4.6.2-custom.aar` exists and contains .so for all 3 ABIs
+2. A standalone Android app using the custom Godot:
+   - Plays a Lottie animation via LottieAnimation node
+   - All Control nodes are fully accessible via TalkBack
+   - Navigation order, live regions, custom actions, focus, text input all work
+3. An embedded Android app with GodotFragment:
+   - Same Lottie + accessibility functionality as standalone
+   - Host app's native views remain accessible
+   - Focus transitions between host and Godot views work
+4. Desktop builds (Linux/Windows) have no regressions:
+   - Existing AccessKit screen reader support still works
+   - LottieAnimation node works in the editor
+5. Binary size overhead is < 500KB per ABI compared to vanilla Godot

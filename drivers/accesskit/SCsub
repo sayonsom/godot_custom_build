@@ -1,0 +1,22 @@
+#!/usr/bin/env python
+from misc.utility.scons_hints import *
+
+Import("env")
+
+# Driver source files
+env.add_source_files(env.drivers_sources, "accessibility_driver_accesskit.cpp")
+
+if env["accesskit_sdk_path"] == "":
+    if env["platform"] == "windows":
+        env.add_source_files(env.drivers_sources, "dynwrappers/accesskit-dll_wrap.c")
+    if env["platform"] == "macos":
+        env.add_source_files(env.drivers_sources, "dynwrappers/accesskit-dylib_wrap.c")
+    if env["platform"] == "linuxbsd":
+        env.add_source_files(env.drivers_sources, "dynwrappers/accesskit-so_wrap.c")
+    if env["platform"] == "android":
+        # Android uses static linking (no dynamic wrapper).
+        abi_map = {"arm64": "arm64-v8a", "arm32": "armeabi-v7a", "x86_64": "x86_64", "x86_32": "x86_64"}
+        abi_dir = abi_map.get(env["arch"], "arm64-v8a")
+        env.Prepend(LIBPATH=["#thirdparty/accesskit/android/" + abi_dir])
+        env.Append(LIBS=["accesskit"])
+    env.Prepend(CPPPATH=["#thirdparty/accesskit/include"])
