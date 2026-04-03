@@ -69,7 +69,10 @@ task zipGradleBuild(type: Zip) {
  * libraries should be excluded.
  */
 def excludeSconsBuildTasks() {
-    return !isAndroidStudio() && !project.hasProperty("generateNativeLibs")
+    // Always exclude scons build tasks when running from command line.
+    // The native .so files are either pre-built in the repo or built
+    // manually with scons before running gradle.
+    return true
 }
 
 /**
@@ -77,6 +80,8 @@ def excludeSconsBuildTasks() {
  */
 def templateExcludedBuildTask() {
     // We exclude these gradle tasks so we can run the scons command manually.
+    // Only exclude tasks that actually exist — if scons is not installed,
+    // the tasks were never created and excluding them causes a Gradle error.
     def excludedTasks = []
     if (excludeSconsBuildTasks()) {
         logger.info("Excluding Android studio build tasks")
@@ -84,7 +89,15 @@ def templateExcludedBuildTask() {
             String[] supportedBuildTypes = supportedFlavorsBuildTypes[flavor]
             for (String buildType : supportedBuildTypes) {
                 for (String abi : selectedAbis) {
-                    excludedTasks += ":lib:" + getSconsTaskName(flavor, buildType, abi)
+                    def taskName = ":lib:" + getSconsTaskName(flavor, buildType, abi)
+                    // Only exclude if the task actually exists
+                    try {
+                        if (project(":lib").tasks.findByName(getSconsTaskName(flavor, buildType, abi)) != null) {
+                            excludedTasks += taskName
+                        }
+                    } catch (Exception e) {
+                        // Task doesn't exist — skip exclusion
+                    }
                 }
             }
         }

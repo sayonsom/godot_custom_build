@@ -156,14 +156,22 @@ android {
         if (sconsExecutableFile == null) {
             // Check if pre-built .so files already exist (e.g., from the repo).
             // If they do, we can skip the scons requirement entirely.
+            // Map Godot ABI names to Android ABI directory names.
+            def abiDirMap = [
+                "arm64": "arm64-v8a",
+                "arm32": "armeabi-v7a",
+                "x86_64": "x86_64",
+                "x86_32": "x86"
+            ]
             boolean hasPrebuiltLibs = false
             def libsBaseDir = project.projectDir.absolutePath + "/libs"
             for (String abi : selectedAbis) {
-                // Check flavor-specific path (e.g., libs/template/arm64-v8a/)
-                def soFile = new File("${libsBaseDir}/${flavorName}/${abi}/libgodot_android.so")
+                def androidAbi = abiDirMap.containsKey(abi) ? abiDirMap[abi] : abi
+                // Check release path (e.g., libs/release/arm64-v8a/)
+                def soFile = new File("${libsBaseDir}/release/${androidAbi}/libgodot_android.so")
                 if (!soFile.exists()) {
-                    // Also check release path (e.g., libs/release/arm64-v8a/)
-                    soFile = new File("${libsBaseDir}/release/${abi}/libgodot_android.so")
+                    // Also check flavor path (e.g., libs/template/arm64-v8a/)
+                    soFile = new File("${libsBaseDir}/${flavorName}/${androidAbi}/libgodot_android.so")
                 }
                 if (soFile.exists()) {
                     hasPrebuiltLibs = true
