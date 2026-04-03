@@ -154,25 +154,44 @@ android {
             }
         }
         if (sconsExecutableFile == null) {
-            throw new GradleException("Unable to find executable path for the '$sconsName' command.")
+            // Check if pre-built .so files already exist (e.g., from the repo).
+            // If they do, we can skip the scons requirement entirely.
+            boolean hasPrebuiltLibs = false
+            def libsBaseDir = project.projectDir.absolutePath + "/libs"
+            for (String abi : selectedAbis) {
+                // Check flavor-specific path (e.g., libs/template/arm64-v8a/)
+                def soFile = new File("${libsBaseDir}/${flavorName}/${abi}/libgodot_android.so")
+                if (!soFile.exists()) {
+                    // Also check release path (e.g., libs/release/arm64-v8a/)
+                    soFile = new File("${libsBaseDir}/release/${abi}/libgodot_android.so")
+                }
+                if (soFile.exists()) {
+                    hasPrebuiltLibs = true
+                    logger.lifecycle("Found pre-built library: ${soFile.absolutePath}")
+                }
+            }
+            if (!hasPrebuiltLibs) {
+                throw new GradleException("Unable to find executable path for the '$sconsName' command and no pre-built .so files found. Install scons and run the native build first, or place pre-built libgodot_android.so files in lib/libs/release/<abi>/.")
+            }
+            logger.lifecycle("Scons not found, but pre-built .so files exist — skipping native build step.")
         } else {
             logger.debug("Found executable path for $sconsName: ${sconsExecutableFile.absolutePath}")
-        }
 
-        for (String selectedAbi : selectedAbis) {
-            if (!supportedAbis.contains(selectedAbi)) {
-                throw new GradleException("Invalid selected abi: $selectedAbi")
+            for (String selectedAbi : selectedAbis) {
+                if (!supportedAbis.contains(selectedAbi)) {
+                    throw new GradleException("Invalid selected abi: $selectedAbi")
+                }
+
+                // Creating gradle task to generate the native libraries for the selected abi.
+                def taskName = getSconsTaskName(flavorName, buildType, selectedAbi)
+                tasks.create(name: taskName, type: Exec) {
+                    executable sconsExecutableFile.absolutePath
+                    args "--directory=${pathToRootDir}", "platform=android", "store_release=${storeRelease}", "production=${productionBuild}", "dev_mode=${devBuild}", "dev_build=${devBuild}", "debug_symbols=${debugSymbols}", "tests=${runTests}", "target=${sconsTarget}", "arch=${selectedAbi}", "-j" + Runtime.runtime.availableProcessors()
+                }
+
+                // Schedule the tasks so the generated libs are present before the aar file is packaged.
+                tasks["merge${flavorName.capitalize()}${buildType.capitalize()}JniLibFolders"].dependsOn taskName
             }
-
-            // Creating gradle task to generate the native libraries for the selected abi.
-            def taskName = getSconsTaskName(flavorName, buildType, selectedAbi)
-            tasks.create(name: taskName, type: Exec) {
-                executable sconsExecutableFile.absolutePath
-                args "--directory=${pathToRootDir}", "platform=android", "store_release=${storeRelease}", "production=${productionBuild}", "dev_mode=${devBuild}", "dev_build=${devBuild}", "debug_symbols=${debugSymbols}", "tests=${runTests}", "target=${sconsTarget}", "arch=${selectedAbi}", "-j" + Runtime.runtime.availableProcessors()
-            }
-
-            // Schedule the tasks so the generated libs are present before the aar file is packaged.
-            tasks["merge${flavorName.capitalize()}${buildType.capitalize()}JniLibFolders"].dependsOn taskName
         }
     }
 
