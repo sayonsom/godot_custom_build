@@ -30,6 +30,10 @@
 
 #include "scene_tree.h"
 
+#ifdef ANDROID_ENABLED
+#include <android/log.h>
+#endif
+
 #include "core/config/project_settings.h"
 #include "core/input/input.h"
 #include "core/io/image_loader.h"
@@ -247,10 +251,22 @@ void SceneTree::_process_accessibility_changes(DisplayServer::WindowID p_window_
 	Vector<ObjectID> processed;
 	for (const ObjectID &id : accessibility_change_queue) {
 		Node *node = Object::cast_to<Node>(ObjectDB::get_instance(id));
-		if (!node || !node->get_non_popup_window() || !node->get_window()->is_visible()) {
+		if (!node) {
 			processed.push_back(id);
-			continue; // Invalid node, remove from list and skip.
-		} else if (node->get_non_popup_window()->get_window_id() != p_window_id) {
+			continue; // Truly invalid node, remove from list.
+		}
+		if (!node->get_non_popup_window()) {
+			continue; // No window at all, skip.
+		}
+#ifndef ANDROID_ENABLED
+		if (!node->get_window()->is_visible()) {
+			// Window not visible yet — skip, retry next frame.
+			// On Android this check is skipped because embedded mode
+			// may have window not "visible" during .pck loading.
+			continue;
+		}
+#endif
+		if (node->get_non_popup_window()->get_window_id() != p_window_id) {
 			continue; // Another window, skip.
 		}
 		node->notification(Node::NOTIFICATION_ACCESSIBILITY_UPDATE);
@@ -305,8 +321,41 @@ void SceneTree::_flush_accessibility_changes() {
 		accessibility_force_update = false;
 		accessibility_last_update = time;
 
+		// BUILD 013: If the queue is empty but we haven't done a full re-queue yet,
+		// re-queue the entire scene tree to ensure all parent-child links are
+		// established. This fixes embedded mode where the initial tree push
+		// has missing children because some nodes' elements weren't created yet.
+		// Also retry up to 3 times with 1-second gaps to handle late activation.
+		if (accessibility_change_queue.is_empty() && accessibility_requeue_count < 3) {
+			Window *root_window = get_root();
+			if (root_window && root_window->is_visible()) {
+				uint64_t now = OS::get_singleton()->get_ticks_msec();
+				// Wait at least 1 second between re-queues
+				if (now - accessibility_last_requeue > 1000) {
+					_accessibility_requeue_all(root_window);
+					accessibility_requeue_count++;
+					accessibility_last_requeue = now;
+#ifdef ANDROID_ENABLED
+					__android_log_print(ANDROID_LOG_INFO, "GodotAccessKit",
+						"REQUEUE: pass %d — re-queued entire scene tree (%d nodes in queue)",
+						accessibility_requeue_count, (int)accessibility_change_queue.size());
+#endif
+				}
+			}
+		}
+
 		// Push update to the accessibility driver.
 		DisplayServer::get_singleton()->accessibility_update_if_active(callable_mp(this, &SceneTree::_process_accessibility_changes));
+	}
+}
+
+void SceneTree::_accessibility_requeue_all(Node *p_node) {
+	if (!p_node || p_node->is_part_of_edited_scene()) {
+		return;
+	}
+	_accessibility_notify_change(p_node);
+	for (int i = 0; i < p_node->get_child_count(); i++) {
+		_accessibility_requeue_all(p_node->get_child(i));
 	}
 }
 

@@ -31,6 +31,10 @@
 #include "node.h"
 #include "node.compat.inc"
 
+#ifdef ANDROID_ENABLED
+#include <android/log.h>
+#endif
+
 STATIC_ASSERT_INCOMPLETE_TYPE(class, Mesh);
 STATIC_ASSERT_INCOMPLETE_TYPE(class, RenderingServer);
 STATIC_ASSERT_INCOMPLETE_TYPE(class, DisplayServer);
@@ -74,16 +78,43 @@ void Node::_notification(int p_notification) {
 
 			// Node children.
 			if (!accessibility_override_tree_hierarchy()) {
+				bool has_missing_children = false;
+				int linked_count = 0;
+				int null_count = 0;
+				int skipped_window = 0;
+				int skipped_edited = 0;
 				for (int i = 0; i < get_child_count(); i++) {
 					Node *child_node = get_child(i);
 					Window *child_wnd = Object::cast_to<Window>(child_node);
 					if (child_wnd && !(child_wnd->is_visible() && (child_wnd->is_embedded() || child_wnd->is_popup()))) {
+						skipped_window++;
 						continue;
 					}
 					if (child_node->is_part_of_edited_scene()) {
+						skipped_edited++;
 						continue;
 					}
-					DisplayServer::get_singleton()->accessibility_update_add_child(ae, child_node->get_accessibility_element());
+					RID child_ae = child_node->get_accessibility_element();
+					if (child_ae.is_null()) {
+						has_missing_children = true;
+						null_count++;
+						continue;
+					}
+					DisplayServer::get_singleton()->accessibility_update_add_child(ae, child_ae);
+					linked_count++;
+				}
+#ifdef ANDROID_ENABLED
+				static int a11y_log_count = 0;
+				if (a11y_log_count < 30 && (linked_count > 0 || null_count > 0)) {
+					__android_log_print(ANDROID_LOG_INFO, "GodotAccessKit",
+						"A11Y-UPDATE: node=\"%s\" total_children=%d linked=%d null=%d skipped_win=%d skipped_edit=%d",
+						String(get_name()).utf8().get_data(), get_child_count(),
+						linked_count, null_count, skipped_window, skipped_edited);
+					a11y_log_count++;
+				}
+#endif
+				if (has_missing_children) {
+					queue_accessibility_update();
 				}
 			}
 		} break;
@@ -3745,8 +3776,37 @@ RID Node::get_accessibility_element() const {
 	}
 	if (unlikely(data.accessibility_element.is_null())) {
 		Window *w = get_non_popup_window();
-		if (w && w->get_window_id() != DisplayServer::INVALID_WINDOW_ID && get_window()->is_visible()) {
+#ifdef ANDROID_ENABLED
+		// BUILD 014b: Log WHY element creation fails
+		static int log_count = 0;
+		if (log_count < 20) { // Only log first 20 to avoid spam
+			__android_log_print(ANDROID_LOG_INFO, "GodotAccessKit",
+				"get_accessibility_element: node=\"%s\" w=%p w_id=%d in_tree=%d",
+				String(get_name()).utf8().get_data(),
+				w,
+				w ? (int)w->get_window_id() : -999,
+				is_inside_tree() ? 1 : 0);
+			log_count++;
+		}
+#endif
+		if (w && w->get_window_id() != DisplayServer::INVALID_WINDOW_ID) {
+			// BUILD 014: On Android, skip the window visibility check.
+			// In embedded mode (.pck loading), the window may not be "visible"
+			// yet when nodes enter the tree, but the window ID is already valid.
+			// The visibility check prevented element creation, which meant
+			// parent nodes couldn't link their children (children had null RIDs).
+			// This caused 2751 nodes to be pushed to AccessKit with only 1
+			// push_child call — all nodes except ROOT were orphaned.
+			//
+			// On desktop platforms, keep the visibility check to avoid creating
+			// elements for truly hidden windows (popups, dialogs).
+#ifdef ANDROID_ENABLED
 			data.accessibility_element = DisplayServer::get_singleton()->accessibility_create_element(w->get_window_id(), DisplayServer::ROLE_CONTAINER);
+#else
+			if (get_window()->is_visible()) {
+				data.accessibility_element = DisplayServer::get_singleton()->accessibility_create_element(w->get_window_id(), DisplayServer::ROLE_CONTAINER);
+			}
+#endif
 		}
 	}
 	return data.accessibility_element;

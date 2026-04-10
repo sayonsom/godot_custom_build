@@ -340,6 +340,9 @@ public:
 	void _accessibility_notify_change(const Node *p_node, bool p_remove = false);
 	void _flush_accessibility_changes();
 	void _process_accessibility_changes(int p_window_id); // Effectively DisplayServer::WindowID
+	void _accessibility_requeue_all(Node *p_node);
+	int accessibility_requeue_count = 0;
+	uint64_t accessibility_last_requeue = 0;
 
 	virtual void initialize() override;
 

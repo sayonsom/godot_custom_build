@@ -31,6 +31,10 @@
 #include "canvas_item.h"
 #include "canvas_item.compat.inc"
 
+#ifdef ANDROID_ENABLED
+#include <android/log.h>
+#endif
+
 #include "scene/2d/canvas_group.h"
 #include "scene/main/canvas_layer.h"
 #include "scene/main/window.h"
@@ -300,7 +304,23 @@ void CanvasItem::_notification(int p_what) {
 			RID ae = get_accessibility_element();
 			ERR_FAIL_COND(ae.is_null());
 
+#ifdef ANDROID_ENABLED
+			// BUILD 016: TEMPORARY — log which nodes are hidden, and
+			// skip setting FLAG_HIDDEN so AccessKit doesn't ExcludeSubtree them.
+			// This verifies whether hidden nodes are the cause of missing VIDs.
+			static int hidden_log_count = 0;
+			if (!visible && hidden_log_count < 50) {
+				__android_log_print(ANDROID_LOG_INFO, "GodotAccessKit",
+					"HIDDEN-FLAG: node=\"%s\" class=\"%s\" visible=false — SKIPPING FLAG_HIDDEN for test",
+					String(get_name()).utf8().get_data(),
+					get_class().utf8().get_data());
+				hidden_log_count++;
+			}
+			// TEMPORARILY DO NOT SET FLAG_HIDDEN — let all nodes pass AccessKit filter
+			// DisplayServer::get_singleton()->accessibility_update_set_flag(ae, DisplayServer::AccessibilityFlags::FLAG_HIDDEN, !visible);
+#else
 			DisplayServer::get_singleton()->accessibility_update_set_flag(ae, DisplayServer::AccessibilityFlags::FLAG_HIDDEN, !visible);
+#endif
 		} break;
 
 		case NOTIFICATION_ENTER_TREE: {

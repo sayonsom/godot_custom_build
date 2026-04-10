@@ -41,7 +41,8 @@
 #ifdef ANDROID_ENABLED
 #include "platform/android/thread_jandroid.h"
 #include <android/log.h>
-#define ACCESSKIT_LOG(...) __android_log_print(ANDROID_LOG_DEBUG, "GodotAccessKit", __VA_ARGS__)
+// Use ANDROID_LOG_INFO so these appear in release builds too (not stripped by logcat filters)
+#define ACCESSKIT_LOG(...) __android_log_print(ANDROID_LOG_INFO, "GodotAccessKit", __VA_ARGS__)
 #endif
 
 AccessibilityDriverAccessKit *AccessibilityDriverAccessKit::singleton = nullptr;
@@ -84,6 +85,10 @@ bool AccessibilityDriverAccessKit::window_create(DisplayServer::WindowID p_windo
 	// We use the InjectingAdapter which automatically injects accessibility
 	// into the View without needing a separate Java accessibility delegate.
 	JNIEnv *jni_env = nullptr;
+	ACCESSKIT_LOG("========================================================");
+	ACCESSKIT_LOG("  Godot Custom Build: godot-custom-p0-fix-20260410-016");
+	ACCESSKIT_LOG("  AccessKit Android adapter initialization");
+	ACCESSKIT_LOG("========================================================");
 	ACCESSKIT_LOG("window_create: p_handle=%p", p_handle);
 	if (p_handle) {
 		jni_env = get_jni_env();
@@ -394,7 +399,12 @@ RID AccessibilityDriverAccessKit::accessibility_create_sub_text_edit_elements(co
 		if (total < t.length()) {
 			word_lengths.push_back(t.length() - total);
 		}
+#ifndef ACCESSKIT_DYNAMIC
+		// accesskit_node_set_word_starts is only available in accesskit-c v0.21+
+		// The Windows/macOS/Linux dynamic wrappers were generated from an older version
+		// and don't export this symbol. Static linking (Android) has it.
 		accesskit_node_set_word_starts(ae->node, word_lengths.size(), word_lengths.ptr());
+#endif
 
 		// Char widths and positions.
 		Vector<float> char_positions;
@@ -605,6 +615,31 @@ accesskit_tree_update *AccessibilityDriverAccessKit::_accessibility_build_tree_u
 	AccessibilityElement *focus_ae = singleton->rid_owner.get_or_null(singleton->focus);
 	uint32_t update_size = wd.update.size();
 
+#ifdef ANDROID_ENABLED
+	// BUILD 010: Log the dirty set to understand which nodes Godot is pushing
+	ACCESSKIT_LOG("BUILD-TREE: update_size=%d (dirty nodes to push)", (int)update_size);
+	int node_idx = 0;
+	for (const RID &rid : wd.update) {
+		AccessibilityElement *ae = singleton->rid_owner.get_or_null(rid);
+		if (ae) {
+			ACCESSKIT_LOG("BUILD-TREE: [%d] rid=%llu role=%d name=\"%s\" children=%d hasNode=%s",
+				node_idx, (unsigned long long)rid.get_id(), (int)ae->role,
+				ae->name.utf8().get_data(), (int)ae->children.size(),
+				ae->node ? "yes" : "no");
+			for (int ci = 0; ci < (int)ae->children.size(); ci++) {
+				AccessibilityElement *child = singleton->rid_owner.get_or_null(ae->children[ci]);
+				if (child) {
+					ACCESSKIT_LOG("BUILD-TREE:   child[%d] rid=%llu name=\"%s\" role=%d hasNode=%s",
+						ci, (unsigned long long)ae->children[ci].get_id(),
+						child->name.utf8().get_data(), (int)child->role,
+						child->node ? "yes" : "no");
+				}
+			}
+		}
+		node_idx++;
+	}
+#endif
+
 	accesskit_node_id ac_focus = (accesskit_node_id)wd.root_id.get_id();
 	if (focus_ae && focus_ae->window_id == window_id) {
 		ac_focus = (accesskit_node_id)singleton->focus.get_id();
@@ -622,40 +657,59 @@ accesskit_tree_update *AccessibilityDriverAccessKit::_accessibility_build_tree_u
 		}
 	}
 
+	// Original hierarchical tree structure (all platforms)
+#ifdef ANDROID_ENABLED
+	int total_push_child = 0;
+	int total_push_node = 0;
+	int nodes_with_children = 0;
+#endif
 	for (const RID &rid : wd.update) {
 		AccessibilityElement *ae = singleton->rid_owner.get_or_null(rid);
 		if (ae && ae->node) {
+#ifdef ANDROID_ENABLED
+			if (ae->children.size() > 0) {
+				nodes_with_children++;
+				ACCESSKIT_LOG("LINK: node \"%s\" (rid=%llu) linking %d children",
+					ae->name.utf8().get_data(), (unsigned long long)rid.get_id(),
+					(int)ae->children.size());
+			}
+#endif
 			for (const RID &child_rid : ae->children) {
 				AccessibilityElement *child_ae = singleton->rid_owner.get_or_null(child_rid);
 				if (!child_ae) {
 					continue; // Invalid child RID, skip.
 				}
-				// If this child has no AccessKit node yet, create a minimal
-				// placeholder so TalkBack doesn't crash when trying to focus it.
-				// This happens for Godot nodes (Node3D, MeshInstance3D, etc.)
-				// that were added to the accessibility tree as children but
-				// never had their own NOTIFICATION_ACCESSIBILITY_UPDATE set
-				// meaningful properties on them.
 				if (!child_ae->node && !pushed_ids.has(child_rid.get_id())) {
 					child_ae->node = _new_accesskit_node(child_ae->role);
-					// Give it a label so TalkBack has something to announce
-					// (or at least doesn't crash on a completely empty node).
 					if (!child_ae->name.is_empty()) {
 						accesskit_node_set_label(child_ae->node, child_ae->name.utf8().ptr());
 					}
-					// Android CollectionInfo defaults already set by _new_accesskit_node().
-					// Push this placeholder into the tree update so AccessKit
-					// has valid node data for every child ID the parent references.
 					accesskit_tree_update_push_node(tree_update, (accesskit_node_id)child_rid.get_id(), child_ae->node);
 					child_ae->node = nullptr;
 					pushed_ids.insert(child_rid.get_id());
 				}
 				accesskit_node_push_child(ae->node, (accesskit_node_id)child_rid.get_id());
+#ifdef ANDROID_ENABLED
+				total_push_child++;
+#endif
 			}
 			accesskit_tree_update_push_node(tree_update, (accesskit_node_id)rid.get_id(), ae->node);
 			ae->node = nullptr;
+#ifdef ANDROID_ENABLED
+			total_push_node++;
+			// BUILD 015: Log every node being sent to AccessKit (first 50 only)
+			if (total_push_node <= 50) {
+				ACCESSKIT_LOG("PUSH-NODE: [%d] rid=%llu name=\"%s\" children_linked=%d role=%d",
+					total_push_node, (unsigned long long)rid.get_id(),
+					ae->name.utf8().get_data(), (int)ae->children.size(), (int)ae->role);
+			}
+#endif
 		}
 	}
+#ifdef ANDROID_ENABLED
+	ACCESSKIT_LOG("TREE-STATS: pushed %d nodes, %d push_child calls, %d nodes have children",
+		total_push_node, total_push_child, nodes_with_children);
+#endif
 	wd.update.clear();
 
 	return tree_update;
@@ -1620,7 +1674,12 @@ void AccessibilityDriverAccessKit::accessibility_update_set_color_value(const RI
 	_ensure_node(p_id, ae);
 
 	accesskit_color c = { (uint8_t)(p_color.r * 255), (uint8_t)(p_color.g * 255), (uint8_t)(p_color.b * 255), (uint8_t)(p_color.a * 255) };
+#ifdef ACCESSKIT_DYNAMIC
+	uint32_t cv; memcpy(&cv, &c, sizeof(cv));
+	accesskit_node_set_color_value(ae->node, cv);
+#else
 	accesskit_node_set_color_value(ae->node, c);
+#endif
 }
 
 void AccessibilityDriverAccessKit::accessibility_update_set_background_color(const RID &p_id, const Color &p_color) {
@@ -1631,7 +1690,12 @@ void AccessibilityDriverAccessKit::accessibility_update_set_background_color(con
 	_ensure_node(p_id, ae);
 
 	accesskit_color c = { (uint8_t)(p_color.r * 255), (uint8_t)(p_color.g * 255), (uint8_t)(p_color.b * 255), (uint8_t)(p_color.a * 255) };
+#ifdef ACCESSKIT_DYNAMIC
+	uint32_t cv; memcpy(&cv, &c, sizeof(cv));
+	accesskit_node_set_background_color(ae->node, cv);
+#else
 	accesskit_node_set_background_color(ae->node, c);
+#endif
 }
 
 void AccessibilityDriverAccessKit::accessibility_update_set_foreground_color(const RID &p_id, const Color &p_color) {
@@ -1642,7 +1706,12 @@ void AccessibilityDriverAccessKit::accessibility_update_set_foreground_color(con
 	_ensure_node(p_id, ae);
 
 	accesskit_color c = { (uint8_t)(p_color.r * 255), (uint8_t)(p_color.g * 255), (uint8_t)(p_color.b * 255), (uint8_t)(p_color.a * 255) };
+#ifdef ACCESSKIT_DYNAMIC
+	uint32_t cv; memcpy(&cv, &c, sizeof(cv));
+	accesskit_node_set_foreground_color(ae->node, cv);
+#else
 	accesskit_node_set_foreground_color(ae->node, c);
+#endif
 }
 
 Error AccessibilityDriverAccessKit::init() {

@@ -99,6 +99,9 @@ class Godot private constructor(val context: Context) {
 	companion object {
 		private val TAG = Godot::class.java.simpleName
 
+		/** Custom build identifier — check logcat for this to verify correct engine version. */
+		const val CUSTOM_BUILD_ID = "godot-custom-p0-fix-20260410-016"
+
 		@Volatile private var INSTANCE: Godot? = null
 
 		@JvmStatic
@@ -527,6 +530,11 @@ class Godot private constructor(val context: Context) {
 		}
 
 		beginBenchmarkMeasure("Startup", "Godot::onInitRenderView")
+		Log.i(TAG, "============================================================")
+		Log.i(TAG, "  Godot Custom Build: $CUSTOM_BUILD_ID")
+		Log.i(TAG, "  A11y P0 fix: TYPE_WINDOW_CONTENT_CHANGED on subtree change")
+		Log.i(TAG, "  CollectionInfoFixer BUILD_ID: ${org.godotengine.godot.accessibility.CollectionInfoFixer.BUILD_ID}")
+		Log.i(TAG, "============================================================")
 		Log.v(TAG, "OnInitRenderView: $host")
 		try {
 			this.primaryHost = host

@@ -1441,7 +1441,11 @@ void Window::_notification(int p_what) {
 			DisplayServer::get_singleton()->accessibility_update_set_description(ae, accessibility_description);
 			DisplayServer::get_singleton()->accessibility_update_set_flag(ae, DisplayServer::AccessibilityFlags::FLAG_MODAL, exclusive);
 			DisplayServer::get_singleton()->accessibility_update_add_action(ae, DisplayServer::AccessibilityAction::ACTION_FOCUS, callable_mp(this, &Window::_accessibility_action_grab_focus));
+#ifdef ANDROID_ENABLED
+			// BUILD 016: TEMPORARY — skip FLAG_HIDDEN on window for testing
+#else
 			DisplayServer::get_singleton()->accessibility_update_set_flag(ae, DisplayServer::AccessibilityFlags::FLAG_HIDDEN, !visible);
+#endif
 
 			if (get_embedder() || is_popup()) {
 				Control *parent_ctrl = Object::cast_to<Control>(get_parent());
