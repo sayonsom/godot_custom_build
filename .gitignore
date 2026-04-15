@@ -403,3 +403,11 @@ bin/
 *.apk
 *.idsig
 __pycache__/
+
+# Project-specific generated outputs and packaging artifacts
+dist/
+house_demo/.godot/
+house_demo/build/
+samples/outline-selection-host/.gradle/
+samples/outline-selection-host/app/build/
+samples/outline-selection-host/app/src/main/assets/.godot/

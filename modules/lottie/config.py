@@ -1,5 +1,5 @@
 def can_build(env, platform):
-    env.module_add_dependencies("lottie", ["svg"], True)
+    env.module_add_dependencies("lottie", ["svg", "zip"], True)
     return True
 
 
@@ -8,7 +8,7 @@ def configure(env):
 
 
 def get_doc_classes():
-    return ["ThorVGLottie"]
+    return ["LottieAnimation"]
 
 
 def get_doc_path():

@@ -38,7 +38,8 @@ void initialize_lottie_module(ModuleInitializationLevel p_level) {
 	if (p_level != MODULE_INITIALIZATION_LEVEL_SCENE) {
 		return;
 	}
-	GDREGISTER_CLASS(ThorVGLottie);
+	GDREGISTER_CLASS(LottieAnimation);
+	ClassDB::add_compatibility_class("ThorVGLottie", "LottieAnimation");
 }
 
 void uninitialize_lottie_module(ModuleInitializationLevel p_level) {

@@ -1,0 +1,231 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="LottieAnimation" inherits="Node2D" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../doc/class.xsd">
+	<brief_description>
+		Plays Lottie and dotLottie animations as a 2D engine node.
+	</brief_description>
+	<description>
+		[LottieAnimation] renders Lottie JSON and dotLottie archives directly in the engine without requiring an external addon at runtime.
+
+		The node supports playback control, fit-box rendering, dynamic resolution, optional viewport culling, basic frame caching, and dotLottie animation selection. It is designed to be usable from Godot projects, embedded Android hosts consuming the AAR, and Windows editor workflows using the custom engine build.
+	</description>
+	<tutorials>
+	</tutorials>
+	<signals>
+		<signal name="animation_finished">
+			<description>
+				Emitted when playback reaches the final frame and [member looping] is [code]false[/code].
+			</description>
+		</signal>
+		<signal name="animation_loaded">
+			<param index="0" name="success" type="bool" />
+			<description>
+				Emitted after an animation load attempt finishes. [code]success[/code] is [code]true[/code] when the animation source was loaded and is ready to render.
+			</description>
+		</signal>
+		<signal name="frame_changed">
+			<param index="0" name="frame" type="float" />
+			<description>
+				Emitted whenever the rendered frame changes.
+			</description>
+		</signal>
+	</signals>
+	<constants>
+		<constant name="ENGINE_OPTION_THORVG_SW" value="1" enum="EngineOption">
+			<description>
+				Uses the built-in ThorVG software renderer.
+			</description>
+		</constant>
+		<constant name="CULLING_DISABLED" value="0" enum="CullingMode">
+			<description>
+				Disables viewport-based culling.
+			</description>
+		</constant>
+		<constant name="CULLING_VIEWPORT" value="1" enum="CullingMode">
+			<description>
+				Skips drawing when the transformed animation bounds are outside the viewport plus [method get_culling_margin_px].
+			</description>
+		</constant>
+	</constants>
+	<members>
+		<member name="animation_path" type="String" setter="set_animation_path" getter="get_animation_path" default="&quot;&quot;">
+			<description>
+				Path to a [code].json[/code] or [code].lottie[/code] animation source.
+			</description>
+		</member>
+		<member name="autoplay" type="bool" setter="set_autoplay" getter="is_autoplay" default="false">
+			<description>
+				If [code]true[/code], playback starts automatically once the animation is loaded.
+			</description>
+		</member>
+		<member name="dotlottie/selected_animation" type="String" setter="set_selected_dotlottie_animation" getter="get_selected_dotlottie_animation" default="&quot;&quot;">
+			<description>
+				Selects a specific animation inside a dotLottie archive by id or path. If empty, the archive default or first animation is used.
+			</description>
+		</member>
+		<member name="dynamic_resolution" type="bool" setter="set_dynamic_resolution" getter="is_dynamic_resolution" default="true">
+			<description>
+				If [code]true[/code], the internal render target scales with the node transform to improve sharpness.
+			</description>
+		</member>
+		<member name="engine_option" type="int" setter="set_engine_option" getter="get_engine_option" default="1">
+			<description>
+				Selects the rendering backend. The current engine build supports [constant ENGINE_OPTION_THORVG_SW].
+			</description>
+		</member>
+		<member name="fit_box_size" type="Vector2i" setter="set_fit_box_size" getter="get_fit_box_size" default="Vector2i(512, 512)">
+			<description>
+				Target size used when [member fit_into_box] is enabled.
+			</description>
+		</member>
+		<member name="fit_into_box" type="bool" setter="set_fit_into_box" getter="is_fit_into_box" default="true">
+			<description>
+				If [code]true[/code], the animation is rendered to [member fit_box_size]. If [code]false[/code], the animation uses its native size.
+			</description>
+		</member>
+		<member name="frame_cache/budget_mb" type="int" setter="set_frame_cache_budget_mb" getter="get_frame_cache_budget_mb" default="256">
+			<description>
+				Maximum memory budget, in megabytes, used for cached frames.
+			</description>
+		</member>
+		<member name="frame_cache/enabled" type="bool" setter="set_frame_cache_enabled" getter="is_frame_cache_enabled" default="false">
+			<description>
+				Enables frame caching for integer frames to reduce repeated rendering work.
+			</description>
+		</member>
+		<member name="frame_cache/step_frames" type="int" setter="set_frame_cache_step" getter="get_frame_cache_step" default="1">
+			<description>
+				Caches every Nth integer frame when frame caching is enabled.
+			</description>
+		</member>
+		<member name="looping" type="bool" setter="set_looping" getter="is_looping" default="true">
+			<description>
+				If [code]true[/code], playback loops back to the beginning after the last frame.
+			</description>
+		</member>
+		<member name="max_render_size" type="Vector2i" setter="set_max_render_size" getter="get_max_render_size" default="Vector2i(4096, 4096)">
+			<description>
+				Upper clamp for the internal render target size.
+			</description>
+		</member>
+		<member name="offset" type="Vector2" setter="set_offset" getter="get_offset" default="Vector2(0, 0)">
+			<description>
+				Draw offset applied to the animation inside the node.
+			</description>
+		</member>
+		<member name="playing" type="bool" setter="set_playing" getter="is_playing" default="false">
+			<description>
+				Current playback state.
+			</description>
+		</member>
+		<member name="resolution_threshold" type="float" setter="set_resolution_threshold" getter="get_resolution_threshold" default="0.15">
+			<description>
+				Minimum relative size change needed before the render target is resized.
+			</description>
+		</member>
+		<member name="speed" type="float" setter="set_speed" getter="get_speed" default="1.0">
+			<description>
+				Playback speed multiplier.
+			</description>
+		</member>
+	</members>
+	<methods>
+		<method name="get_culling_margin_px" qualifiers="const">
+			<return type="float" />
+			<description>
+				Returns the culling margin in pixels.
+			</description>
+		</method>
+		<method name="get_culling_mode" qualifiers="const">
+			<return type="int" />
+			<description>
+				Returns the active culling mode.
+			</description>
+		</method>
+		<method name="get_duration" qualifiers="const">
+			<return type="float" />
+			<description>
+				Returns the total animation duration in seconds.
+			</description>
+		</method>
+		<method name="get_frame" qualifiers="const">
+			<return type="float" />
+			<description>
+				Returns the current playback frame.
+			</description>
+		</method>
+		<method name="get_render_size" qualifiers="const">
+			<return type="Vector2i" />
+			<description>
+				Returns the current internal render target size.
+			</description>
+		</method>
+		<method name="get_total_frames" qualifiers="const">
+			<return type="float" />
+			<description>
+				Returns the total frame count of the loaded animation.
+			</description>
+		</method>
+		<method name="is_using_animation_size" qualifiers="const">
+			<return type="bool" />
+			<description>
+				Returns [code]true[/code] when the animation is using its native size instead of [member fit_box_size].
+			</description>
+		</method>
+		<method name="pause">
+			<description>
+				Pauses playback and keeps the current frame.
+			</description>
+		</method>
+		<method name="play">
+			<description>
+				Starts or resumes playback.
+			</description>
+		</method>
+		<method name="render_static">
+			<description>
+				Renders the current frame once without advancing playback.
+			</description>
+		</method>
+		<method name="seek">
+			<param index="0" name="frame" type="float" />
+			<description>
+				Seeks to the specified frame and renders it immediately.
+			</description>
+		</method>
+		<method name="set_culling_margin_px">
+			<param index="0" name="margin" type="float" />
+			<description>
+				Sets extra pixel margin used by viewport culling.
+			</description>
+		</method>
+		<method name="set_culling_mode">
+			<param index="0" name="mode" type="int" />
+			<description>
+				Sets the culling mode. Use [constant CULLING_DISABLED] or [constant CULLING_VIEWPORT].
+			</description>
+		</method>
+		<method name="set_frame">
+			<param index="0" name="frame" type="float" />
+			<description>
+				Sets the current frame and renders it immediately.
+			</description>
+		</method>
+		<method name="set_render_size">
+			<param index="0" name="size" type="Vector2i" />
+			<description>
+				Sets the target render size and enables [member fit_into_box].
+			</description>
+		</method>
+		<method name="set_use_animation_size">
+			<param index="0" name="enabled" type="bool" />
+			<description>
+				Enables or disables using the animation native size directly.
+			</description>
+		</method>
+		<method name="stop">
+			<description>
+				Stops playback and resets to the first frame.
+			</description>
+		</method>
+	</methods>
+</class>

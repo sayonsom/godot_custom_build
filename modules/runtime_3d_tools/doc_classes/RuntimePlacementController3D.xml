@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="RuntimePlacementController3D" inherits="Node3D" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../doc/class.xsd">
+	<brief_description>
+		Runtime controller for selecting, moving, rotating, and flipping placed 3D objects.
+	</brief_description>
+	<description>
+		[RuntimePlacementController3D] watches a target container, projects pointer input through a [Camera3D], and draws an outline plus rotation handle around the selected child [Node3D].
+
+		It is designed for real projects that already have GLTF/GLB content, without requiring the sample scene.
+
+		Use the API directly from your own game logic:
+		1. Configure [member camera_path] and [member targets_root_path].
+		2. Call [method select_target_at_screen_position] for tap selection if needed.
+		3. Use [method move_selected_to_screen_position], [method rotate_selected], [method flip_selected_x], [method flip_selected_z].
+			4. Use [method place_target_on_floor] when spawning GLTF/GLB instances.
+			5. Control behavior with [member require_double_tap_to_move], [member clear_selection_on_empty_tap], [member move_guides_enabled], [member drag_bounds], and [member drag_bounds_enabled].
+
+			For engine-level integration in existing projects, explicit boundary APIs are also available:
+			[method create_boundary], [method update_boundary], [method update_color], [method delete_boundary].
+		</description>
+</class>
